@@ -6,3 +6,7 @@ Services (AWS).
 
 Currently, the only package implemented is the *sign4* package, which signs http
 requests to AWS.
+
+Install
+-------
+`go install github.com/p-lewis/awsgolang`
