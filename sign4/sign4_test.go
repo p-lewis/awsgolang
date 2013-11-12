@@ -277,4 +277,3 @@ func getTimeFromCR(req *sign4.CanonicalRequestT) (t *time.Time, err error) {
 
 	return nil, errors.New("Couldn't find a date. (Sob).")
 }
-

@@ -166,15 +166,14 @@ func (cqr *CreateQueueResponse) SetRawResponse(rawResponse []byte) {
 }
 
 type DeleteQueueResponse struct {
-	XMLName xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ DeleteQueueResponse"`
-	RequestId string `xml:"ResponseMetadata>RequestId"`
-	RawResponse []byte 
+	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ DeleteQueueResponse"`
+	RequestId   string   `xml:"ResponseMetadata>RequestId"`
+	RawResponse []byte
 }
 
 func (dqr *DeleteQueueResponse) SetRawResponse(rawResponse []byte) {
 	dqr.RawResponse = rawResponse
 }
-
 
 type ErrorResponse struct {
 	XMLName     xml.Name  `xml:"http://queue.amazonaws.com/doc/2012-11-05/ ErrorResponse"`

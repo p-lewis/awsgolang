@@ -40,7 +40,6 @@ var testSQS = sqs.SQS{testCredentials, testRegion, sqs.DefaultClientFactory}
 // LIVE tests; will cost $$ if you run!
 
 type LiveSQSSuite struct {
-
 	Credentials *auth.Credentials
 }
 
@@ -87,7 +86,7 @@ func (s *LiveSQSSuite) TestLiveCreateQueueFailure(c *C) {
 	c.Assert(errResp.ErrorInfo.Code, Equals, "InvalidParameterValue")
 }
 
-func (s *LiveSQSSuite) TestDeleteQueue(c *C) {
+func (s *LiveSQSSuite) TestLiveDeleteQueue(c *C) {
 	queueName := "Test_sqs_testDeleteQueue_" + time.Now().Format(TIMESTAMP_FMT)
 	queue, _, err := s.createLiveQueue(queueName)
 	c.Assert(err, IsNil)
@@ -99,11 +98,11 @@ func (s *LiveSQSSuite) TestDeleteQueue(c *C) {
 }
 
 func (s *LiveSQSSuite) TestDeleteNonexistentQueue(c *C) {
-	mySqs :=sqs.SQS{s.Credentials, &sqs.USWest, sqs.DefaultClientFactory}
-	fakeQueue := &sqs.Queue {
-		SQS: &mySqs,
+	mySqs := sqs.SQS{s.Credentials, &sqs.USWest, sqs.DefaultClientFactory}
+	fakeQueue := &sqs.Queue{
+		SQS:  &mySqs,
 		Name: "Test_sqs_test_DeleteNonexistentQueue",
-		Url: "https://sqs.us-west-1.amazonaws.com/159365254521/Test_sqs_test_DeleteNonexistentQueue" }
+		Url:  "https://sqs.us-west-1.amazonaws.com/159365254521/Test_sqs_test_DeleteNonexistentQueue"}
 	delResp, err := fakeQueue.DeleteQueue()
 	c.Assert(delResp, IsNil)
 	c.Assert(err, Not(IsNil))

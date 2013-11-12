@@ -1,7 +1,7 @@
 // Package signs http requests for Amazon Web Services (AWS) using Signature Version 4.
 //
 // See http://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
-// 
+//
 // There are two ways to use the package.
 //
 // 1. Sign: This is the simplified API; just fill in the required parameters to Sign and get a signed  request.
@@ -364,11 +364,11 @@ func (b ReusableBody) Close() error {
 	return nil // noop
 }
 
-// Request where the Body can be reused and reset. This type wraps http.Request. 
-// This type is used in the signing process because we need to read the request Body, 
-// and an http.Request is normally only avaliable to read once, making it unusable 
+// Request where the Body can be reused and reset. This type wraps http.Request.
+// This type is used in the signing process because we need to read the request Body,
+// and an http.Request is normally only avaliable to read once, making it unusable
 // when we need it for the real request.
-// 
+//
 // If you are going to add or substitute the Body outside of the New* functions, use a ReusableBody and
 // set the Content-Length of the request.
 type ReusableRequest struct {
