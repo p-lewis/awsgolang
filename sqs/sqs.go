@@ -35,22 +35,11 @@ type Region struct {
 	Endpoint string // URL for the endpoint of this region
 }
 
-// Create a new SQS structure.
-//
-// If factoryFn is nil, the default client is inserted.
-// func New(cred *auth.Credentials, region *Region, factoryFn func() *http.Client) {
-// 	sqs := SQS{cred, region, factoryFn}
-// 	if factoryFn == nil {
-// 		sqs.ClientFactory = func()(*http.Client) { return http.DefaultClient }
-// 	}
-// 	return
-// }
-
 func DefaultClientFactory() *http.Client {
 	return http.DefaultClient
 }
 
-func (sqs *SQS) CreateQueue(name string) (sqsQueue *Queue, response *CreateQueueResponse, err error) {
+func (sqs *SQS) CreateQueue(name string) (sqsQueue *Queue, cqResponse *CreateQueueResponse, err error) {
 
 	vals := sqs.defaultValues("CreateQueue")
 	vals.Set("QueueName", name)
@@ -61,19 +50,19 @@ func (sqs *SQS) CreateQueue(name string) (sqsQueue *Queue, response *CreateQueue
 		return
 	}
 
-	respBody, err := sqs.makeRequest(req)
+	httpResponse, err := sqs.makeRequest(req)
 	if err != nil {
 		return
 	}
 
-	response = &CreateQueueResponse{}
+	cqResponse = &CreateQueueResponse{}
 	errResponse := &ErrorResponse{}
-	err = unmarshalResponse(respBody, response, errResponse)
+	err = unmarshalResponse(httpResponse, cqResponse, errResponse)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	sqsQueue = &Queue{SQS: sqs, Name: name, Url: response.QueueUrl}
+	sqsQueue = &Queue{SQS: sqs, Name: name, Url: cqResponse.QueueUrl}
 
 	return
 }
@@ -86,18 +75,43 @@ func (q *Queue) DeleteQueue() (*DeleteQueueResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	respBody, err := q.SQS.makeRequest(req)
+	httpResponse, err := q.SQS.makeRequest(req)
 	if err != nil {
 		return nil, err
 	}
 
-	response, errResponse := &DeleteQueueResponse{}, &ErrorResponse{}
-	err = unmarshalResponse(respBody, response, errResponse)
+	delResponse, errResponse := &DeleteQueueResponse{}, &ErrorResponse{}
+	err = unmarshalResponse(httpResponse, delResponse, errResponse)
 	if err != nil {
 		return nil, err
 	}
-	return response, nil
+	return delResponse, nil
 }
+
+func (sqs *SQS) GetQueue(queueName string) (queue *Queue, gqResp *GetQueueResponse, err error) {
+	vals := sqs.defaultValues("GetQueueUrl")
+	vals.Set("QueueName", queueName)
+	url := fmt.Sprintf("%v/?%v", sqs.Region.Endpoint, vals.Encode())
+
+	req, err := sign4.NewReusableRequest("GET", url, nil)
+	if err != nil {
+		return
+	}
+	httpResp, err := sqs.makeRequest(req)
+	if err != nil {
+		return
+	}
+
+	gqResp, errResponse := &GetQueueResponse{}, &ErrorResponse{}
+	err = unmarshalResponse(httpResp, gqResp, errResponse)
+	if err != nil {
+		return nil, nil, err
+	}
+	queue = &Queue{SQS: sqs, Name: queueName, Url: gqResp.QueueUrl}
+	return
+}
+
+//TODO: Get queue for a given account (GetQueueUrl for a given AWS Account ID)
 
 func (sqs *SQS) defaultValues(action string) (vals *url.Values) {
 	vals = &url.Values{}
@@ -107,7 +121,7 @@ func (sqs *SQS) defaultValues(action string) (vals *url.Values) {
 	return
 }
 
-func (sqs *SQS) makeRequest(rreq *sign4.ReusableRequest) (respBody []byte, err error) {
+func (sqs *SQS) makeRequest(rreq *sign4.ReusableRequest) (resp *http.Response, err error) {
 	cred := sqs.Credentials
 	hreq, err := rreq.Sign(cred.AccessKey, cred.SecretKey, sqs.Region.Name, SERVICE_NAME)
 	if err != nil {
@@ -115,17 +129,14 @@ func (sqs *SQS) makeRequest(rreq *sign4.ReusableRequest) (respBody []byte, err e
 	}
 
 	client := sqs.ClientFactory()
-	resp, err := client.Do(hreq)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	respBody, err = ioutil.ReadAll(resp.Body)
+	resp, err = client.Do(hreq)
 	return
 }
 
 type BodyUnmarshaller interface {
 	SetRawResponse(rawResponse []byte)
+	SetStatus(status string)
+	SetStatusCode(statusCode int)
 }
 
 type BodyUnmarshallerError interface {
@@ -136,38 +147,61 @@ type BodyUnmarshallerError interface {
 // Try to convert a response to a "good" type.
 // Fall back the knownError type.
 // Fall back to a generic error if neither of those work
-func unmarshalResponse(body []byte, goodResponse BodyUnmarshaller, knownErrResponse BodyUnmarshallerError) (err error) {
+func unmarshalResponse(resp *http.Response, goodResponse BodyUnmarshaller, knownErrResponse BodyUnmarshallerError) (err error) {
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
 	// check first if we have a successful conversion
 	err = xml.Unmarshal(body, goodResponse)
 	if err == nil {
 		goodResponse.SetRawResponse(body)
+		goodResponse.SetStatus(resp.Status)
+		goodResponse.SetStatusCode(resp.StatusCode)
 		return
 	}
 
 	err = xml.Unmarshal(body, knownErrResponse)
 	if err == nil {
 		knownErrResponse.SetRawResponse(body)
+		knownErrResponse.SetStatus(resp.Status)
+		knownErrResponse.SetStatusCode(resp.StatusCode)
 		return knownErrResponse
 	}
 
-	return fmt.Errorf("sqs.unmarshalResponse: Unable to unmarshal body data to either %T or %T, body: %s",
-		goodResponse, knownErrResponse, body)
+	return fmt.Errorf("sqs.unmarshalResponse: Unable to unmarshal body data to either %T or %T, Status: %v, body: %s",
+		goodResponse, knownErrResponse, resp.Status, body)
 }
 
 type CreateQueueResponse struct {
 	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ CreateQueueResponse"`
 	QueueUrl    string   `xml:"CreateQueueResult>QueueUrl"`
 	RequestId   string   `xml:"ResponseMetadata>RequestId"`
-	RawResponse []byte   // contains the raw xml data in the response
+	Status      string
+	StatusCode  int
+	RawResponse []byte // contains the raw xml data in the response
 }
 
 func (cqr *CreateQueueResponse) SetRawResponse(rawResponse []byte) {
 	cqr.RawResponse = rawResponse
 }
 
+func (cqr *CreateQueueResponse) SetStatus(status string) {
+	cqr.Status = status
+}
+
+func (cqr *CreateQueueResponse) SetStatusCode(statusCode int) {
+	cqr.StatusCode = statusCode
+}
+
 type DeleteQueueResponse struct {
 	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ DeleteQueueResponse"`
 	RequestId   string   `xml:"ResponseMetadata>RequestId"`
+	Status      string
+	StatusCode  int
 	RawResponse []byte
 }
 
@@ -175,10 +209,41 @@ func (dqr *DeleteQueueResponse) SetRawResponse(rawResponse []byte) {
 	dqr.RawResponse = rawResponse
 }
 
+func (dqr *DeleteQueueResponse) SetStatus(status string) {
+	dqr.Status = status
+}
+
+func (dqr *DeleteQueueResponse) SetStatusCode(statusCode int) {
+	dqr.StatusCode = statusCode
+}
+
+type GetQueueResponse struct {
+	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ GetQueueUrlResponse"`
+	QueueUrl    string   `xml:"GetQueueUrlResult>QueueUrl"`
+	RequestId   string   `xml:"ResponseMetadata>RequestId"`
+	Status      string
+	StatusCode  int
+	RawResponse []byte
+}
+
+func (gqr *GetQueueResponse) SetRawResponse(rawResponse []byte) {
+	gqr.RawResponse = rawResponse
+}
+
+func (gqr *GetQueueResponse) SetStatus(status string) {
+	gqr.Status = status
+}
+
+func (gqr *GetQueueResponse) SetStatusCode(statusCode int) {
+	gqr.StatusCode = statusCode
+}
+
 type ErrorResponse struct {
 	XMLName     xml.Name  `xml:"http://queue.amazonaws.com/doc/2012-11-05/ ErrorResponse"`
 	ErrorInfo   ErrorInfo `xml:"Error"`
 	RequestId   string
+	Status      string
+	StatusCode  int
 	RawResponse []byte
 }
 
@@ -193,4 +258,12 @@ func (e *ErrorResponse) Error() string {
 
 func (e *ErrorResponse) SetRawResponse(rawResponse []byte) {
 	e.RawResponse = rawResponse
+}
+
+func (e *ErrorResponse) SetStatus(status string) {
+	e.Status = status
+}
+
+func (e *ErrorResponse) SetStatusCode(statusCode int) {
+	e.StatusCode = statusCode
 }

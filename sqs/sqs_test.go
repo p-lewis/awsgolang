@@ -41,6 +41,8 @@ var testSQS = sqs.SQS{testCredentials, testRegion, sqs.DefaultClientFactory}
 
 type LiveSQSSuite struct {
 	Credentials *auth.Credentials
+	SQS         *sqs.SQS
+	TestQueue   *sqs.Queue
 }
 
 var _ = Suite(&LiveSQSSuite{})
@@ -50,12 +52,27 @@ var live = flag.Bool("sqs.live", false, "Include live tests (can cost real money
 func (s *LiveSQSSuite) SetUpSuite(c *C) {
 	if !*live {
 		c.Skip("-sqs.live not provided, skipping live SQS tests.")
+		return
 	}
 	cred, err := auth.EnvCredentials()
 	if err != nil {
 		c.Skip("Could not get environment credentials, skipping live tests. Error: " + err.Error())
+		return
 	}
 	s.Credentials = cred
+	s.SQS = &sqs.SQS{s.Credentials, &sqs.USWest, sqs.DefaultClientFactory}
+
+	testQueue, _, err := s.createLiveQueue("Test_sqs_test_LiveTestQueue_" + time.Now().Format(TIMESTAMP_FMT))
+	if err != nil {
+		c.Log(err)
+		c.Skip("Could not create a test queue in SetUpSuite, skipping live tests")
+		return
+	}
+	s.TestQueue = testQueue
+}
+
+func (s *LiveSQSSuite) TearDownSuite(c *C) {
+	s.TestQueue.DeleteQueue()
 }
 
 const (
@@ -63,16 +80,15 @@ const (
 )
 
 func (s *LiveSQSSuite) TestLiveCreateQueue(c *C) {
-	// cred, err := auth.EnvCredentials()
-	// mySqs := &sqs.SQS{cred, &sqs.USWest, sqs.DefaultClientFactory}
 	queueName := "Test_sqs_test_CreateQueue_" + time.Now().Format(TIMESTAMP_FMT)
 	queue, cResp, err := s.createLiveQueue(queueName)
-	// mySqs.CreateQueue(queueName)
 	c.Assert(err, IsNil)
 	c.Assert(queue.Name, Equals, queueName)
 	c.Assert(queue.Url, Not(Equals), "")
 	c.Assert(queue.Url, Equals, cResp.QueueUrl)
 	c.Assert(cResp.RequestId, Not(Equals), "")
+	c.Assert(cResp.Status, Equals, "200 OK")
+	c.Assert(cResp.StatusCode, Equals, 200)
 }
 
 func (s *LiveSQSSuite) TestLiveCreateQueueFailure(c *C) {
@@ -84,6 +100,8 @@ func (s *LiveSQSSuite) TestLiveCreateQueueFailure(c *C) {
 	c.Assert(ok, Equals, true)
 	c.Assert(errResp.ErrorInfo.Type, Equals, "Sender")
 	c.Assert(errResp.ErrorInfo.Code, Equals, "InvalidParameterValue")
+	c.Assert(errResp.Status, Equals, "400 Bad Request")
+	c.Assert(errResp.StatusCode, Equals, 400)
 }
 
 func (s *LiveSQSSuite) TestLiveDeleteQueue(c *C) {
@@ -95,12 +113,14 @@ func (s *LiveSQSSuite) TestLiveDeleteQueue(c *C) {
 	//fmt.Println("RequestId:", delResp.RequestId)
 	c.Assert(err, IsNil)
 	c.Assert(delResp.RequestId, Not(Equals), "")
+	c.Assert(delResp.Status, Equals, "200 OK")
+	c.Assert(delResp.StatusCode, Equals, 200)
 }
 
-func (s *LiveSQSSuite) TestDeleteNonexistentQueue(c *C) {
-	mySqs := sqs.SQS{s.Credentials, &sqs.USWest, sqs.DefaultClientFactory}
+func (s *LiveSQSSuite) TestLiveDeleteNonexistentQueue(c *C) {
+
 	fakeQueue := &sqs.Queue{
-		SQS:  &mySqs,
+		SQS:  s.SQS,
 		Name: "Test_sqs_test_DeleteNonexistentQueue",
 		Url:  "https://sqs.us-west-1.amazonaws.com/159365254521/Test_sqs_test_DeleteNonexistentQueue"}
 	delResp, err := fakeQueue.DeleteQueue()
@@ -110,12 +130,23 @@ func (s *LiveSQSSuite) TestDeleteNonexistentQueue(c *C) {
 	c.Assert(ok, Equals, true)
 	c.Assert(errResponse.ErrorInfo.Type, Equals, "Sender")
 	c.Assert(errResponse.ErrorInfo.Code, Equals, "AWS.SimpleQueueService.NonExistentQueue")
+	c.Assert(errResponse.Status, Equals, "400 Bad Request")
+	c.Assert(errResponse.StatusCode, Equals, 400)
 	//fmt.Printf("RawResponse:\n%s\n", .RawResponse)
 
 }
 
-func (s *LiveSQSSuite) createLiveQueue(name string) (*sqs.Queue, *sqs.CreateQueueResponse, error) {
+func (s *LiveSQSSuite) TestLiveGetQueue(c *C) {
+	name := s.TestQueue.Name
+	queue, gqResp, err := s.SQS.GetQueue(name)
+	c.Assert(err, IsNil)
+	c.Assert(gqResp.Status, Equals, "200 OK")
+	c.Assert(gqResp.StatusCode, Equals, 200)
+	c.Assert(queue.Url, Equals, s.TestQueue.Url)
+	c.Assert(queue.Name, Equals, name)
 
-	mySqs := &sqs.SQS{s.Credentials, &sqs.USWest, sqs.DefaultClientFactory}
-	return mySqs.CreateQueue(name)
+}
+
+func (s *LiveSQSSuite) createLiveQueue(name string) (*sqs.Queue, *sqs.CreateQueueResponse, error) {
+	return s.SQS.CreateQueue(name)
 }
