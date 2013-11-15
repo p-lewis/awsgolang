@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"github.com/p-lewis/awsgolang/auth"
 	"github.com/p-lewis/awsgolang/sign4"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"path"
 )
 
 const (
@@ -44,20 +46,9 @@ func (sqs *SQS) CreateQueue(name string) (sqsQueue *Queue, cqResponse *CreateQue
 	vals := sqs.defaultValues("CreateQueue")
 	vals.Set("QueueName", name)
 
-	url := fmt.Sprintf("%v/?%v", sqs.Region.Endpoint, vals.Encode())
-	req, err := sign4.NewReusableRequest("GET", url, nil)
-	if err != nil {
-		return
-	}
-
-	httpResponse, err := sqs.makeRequest(req)
-	if err != nil {
-		return
-	}
-
 	cqResponse = &CreateQueueResponse{}
-	errResponse := &ErrorResponse{}
-	err = unmarshalResponse(httpResponse, cqResponse, errResponse)
+	err = sqs.getResults(sqs.Region.Endpoint, vals, nil, cqResponse)
+
 	if err != nil {
 		return nil, nil, err
 	}
@@ -69,41 +60,25 @@ func (sqs *SQS) CreateQueue(name string) (sqsQueue *Queue, cqResponse *CreateQue
 
 func (q *Queue) DeleteQueue() (*DeleteQueueResponse, error) {
 	vals := q.SQS.defaultValues("DeleteQueue")
-	url := fmt.Sprintf("%v/?%v", q.Url, vals.Encode())
-	//fmt.Println("url:", q.Url)
-	req, err := sign4.NewReusableRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	httpResponse, err := q.SQS.makeRequest(req)
-	if err != nil {
-		return nil, err
-	}
-
-	delResponse, errResponse := &DeleteQueueResponse{}, &ErrorResponse{}
-	err = unmarshalResponse(httpResponse, delResponse, errResponse)
+	delResponse := &DeleteQueueResponse{}
+	err := q.SQS.getResults(q.Url, vals, nil, delResponse)
 	if err != nil {
 		return nil, err
 	}
 	return delResponse, nil
 }
 
-func (sqs *SQS) GetQueue(queueName string) (queue *Queue, gqResp *GetQueueResponse, err error) {
+// Get queue for a given name and AWS Account ID.
+// If accountId is an empty string (""), returns queues for the current requesting account.
+func (sqs *SQS) GetQueue(queueName, accountId string) (queue *Queue, gqResp *GetQueueResponse, err error) {
 	vals := sqs.defaultValues("GetQueueUrl")
 	vals.Set("QueueName", queueName)
-	url := fmt.Sprintf("%v/?%v", sqs.Region.Endpoint, vals.Encode())
-
-	req, err := sign4.NewReusableRequest("GET", url, nil)
-	if err != nil {
-		return
+	if accountId != "" {
+		vals.Set("QueueOwnerAWSAccountId", accountId)
 	}
-	httpResp, err := sqs.makeRequest(req)
-	if err != nil {
-		return
-	}
+	gqResp = &GetQueueResponse{}
+	err = sqs.getResults(sqs.Region.Endpoint, vals, nil, gqResp)
 
-	gqResp, errResponse := &GetQueueResponse{}, &ErrorResponse{}
-	err = unmarshalResponse(httpResp, gqResp, errResponse)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -111,7 +86,42 @@ func (sqs *SQS) GetQueue(queueName string) (queue *Queue, gqResp *GetQueueRespon
 	return
 }
 
-//TODO: Get queue for a given account (GetQueueUrl for a given AWS Account ID)
+//List queues. If queueNamePrefix not empty (i.e. not ""), only queues with a name beginning
+// with the specified value are returned.
+func (sqs *SQS) ListQueues(queueNamePrefix string) (queues []Queue, lqResp *ListQueuesResponse, err error) {
+	vals := sqs.defaultValues("ListQueues")
+	if queueNamePrefix != "" {
+		vals.Set("QueueNamePrefix", queueNamePrefix)
+	}
+	lqResp = &ListQueuesResponse{}
+	err = sqs.getResults(sqs.Region.Endpoint, vals, nil, lqResp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	queues = make([]Queue, len(lqResp.QueueUrls))
+	for i, url := range lqResp.QueueUrls {
+		_, name := path.Split(url)
+		queues[i] = Queue{SQS: sqs, Name: name, Url: url}
+	}
+	return
+}
+
+// GET results for a given uri, values, expected.
+func (sqs *SQS) getResults(uri string, values *url.Values, body io.Reader, goodResponse BodyUnmarshaller) (err error) {
+	url := fmt.Sprintf("%v/?%v", uri, values.Encode())
+	req, err := sign4.NewReusableRequest("GET", url, body)
+	if err != nil {
+		return
+	}
+	httpResp, err := sqs.makeRequest(req)
+	if err != nil {
+		return
+	}
+	errResponse := &ErrorResponse{}
+	err = unmarshalResponse(httpResp, goodResponse, errResponse)
+	return
+}
 
 func (sqs *SQS) defaultValues(action string) (vals *url.Values) {
 	vals = &url.Values{}
@@ -131,17 +141,6 @@ func (sqs *SQS) makeRequest(rreq *sign4.ReusableRequest) (resp *http.Response, e
 	client := sqs.ClientFactory()
 	resp, err = client.Do(hreq)
 	return
-}
-
-type BodyUnmarshaller interface {
-	SetRawResponse(rawResponse []byte)
-	SetStatus(status string)
-	SetStatusCode(statusCode int)
-}
-
-type BodyUnmarshallerError interface {
-	BodyUnmarshaller
-	error
 }
 
 // Try to convert a response to a "good" type.
@@ -176,75 +175,67 @@ func unmarshalResponse(resp *http.Response, goodResponse BodyUnmarshaller, known
 		goodResponse, knownErrResponse, resp.Status, body)
 }
 
-type CreateQueueResponse struct {
-	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ CreateQueueResponse"`
-	QueueUrl    string   `xml:"CreateQueueResult>QueueUrl"`
-	RequestId   string   `xml:"ResponseMetadata>RequestId"`
+type BodyUnmarshaller interface {
+	SetRawResponse(rawResponse []byte)
+	SetStatus(status string)
+	SetStatusCode(statusCode int)
+}
+
+type BodyUnmarshallerError interface {
+	BodyUnmarshaller
+	error
+}
+
+type AWSResponse struct {
 	Status      string
 	StatusCode  int
 	RawResponse []byte // contains the raw xml data in the response
 }
 
-func (cqr *CreateQueueResponse) SetRawResponse(rawResponse []byte) {
-	cqr.RawResponse = rawResponse
+func (r *AWSResponse) SetRawResponse(rawResponse []byte) {
+	r.RawResponse = rawResponse
 }
 
-func (cqr *CreateQueueResponse) SetStatus(status string) {
-	cqr.Status = status
+func (r *AWSResponse) SetStatus(status string) {
+	r.Status = status
 }
 
-func (cqr *CreateQueueResponse) SetStatusCode(statusCode int) {
-	cqr.StatusCode = statusCode
+func (r *AWSResponse) SetStatusCode(statusCode int) {
+	r.StatusCode = statusCode
+}
+
+type CreateQueueResponse struct {
+	XMLName   xml.Name `xml:"CreateQueueResponse"` //http://queue.amazonaws.com/doc/2012-11-05/
+	QueueUrl  string   `xml:"CreateQueueResult>QueueUrl"`
+	RequestId string   `xml:"ResponseMetadata>RequestId"`
+	AWSResponse
 }
 
 type DeleteQueueResponse struct {
-	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ DeleteQueueResponse"`
-	RequestId   string   `xml:"ResponseMetadata>RequestId"`
-	Status      string
-	StatusCode  int
-	RawResponse []byte
-}
-
-func (dqr *DeleteQueueResponse) SetRawResponse(rawResponse []byte) {
-	dqr.RawResponse = rawResponse
-}
-
-func (dqr *DeleteQueueResponse) SetStatus(status string) {
-	dqr.Status = status
-}
-
-func (dqr *DeleteQueueResponse) SetStatusCode(statusCode int) {
-	dqr.StatusCode = statusCode
+	XMLName   xml.Name `xml:"DeleteQueueResponse"` //http://queue.amazonaws.com/doc/2012-11-05/
+	RequestId string   `xml:"ResponseMetadata>RequestId"`
+	AWSResponse
 }
 
 type GetQueueResponse struct {
-	XMLName     xml.Name `xml:"http://queue.amazonaws.com/doc/2012-11-05/ GetQueueUrlResponse"`
-	QueueUrl    string   `xml:"GetQueueUrlResult>QueueUrl"`
-	RequestId   string   `xml:"ResponseMetadata>RequestId"`
-	Status      string
-	StatusCode  int
-	RawResponse []byte
+	XMLName   xml.Name `xml:"GetQueueUrlResponse"` //http://queue.amazonaws.com/doc/2012-11-05/
+	QueueUrl  string   `xml:"GetQueueUrlResult>QueueUrl"`
+	RequestId string   `xml:"ResponseMetadata>RequestId"`
+	AWSResponse
 }
 
-func (gqr *GetQueueResponse) SetRawResponse(rawResponse []byte) {
-	gqr.RawResponse = rawResponse
-}
-
-func (gqr *GetQueueResponse) SetStatus(status string) {
-	gqr.Status = status
-}
-
-func (gqr *GetQueueResponse) SetStatusCode(statusCode int) {
-	gqr.StatusCode = statusCode
+type ListQueuesResponse struct {
+	XMLName   xml.Name `xml:"ListQueuesResponse"` //http://queue.amazonaws.com/doc/2012-11-05/
+	QueueUrls []string `xml:"ListQueuesResult>QueueUrl"`
+	RequestId string   `xml:"ResponseMetadata>RequestId"`
+	AWSResponse
 }
 
 type ErrorResponse struct {
-	XMLName     xml.Name  `xml:"http://queue.amazonaws.com/doc/2012-11-05/ ErrorResponse"`
-	ErrorInfo   ErrorInfo `xml:"Error"`
-	RequestId   string
-	Status      string
-	StatusCode  int
-	RawResponse []byte
+	XMLName   xml.Name  `xml:"ErrorResponse"` //http://queue.amazonaws.com/doc/2012-11-05/
+	Err       ErrorInfo `xml:"Error"`
+	RequestId string
+	AWSResponse
 }
 
 type ErrorInfo struct {
@@ -253,17 +244,5 @@ type ErrorInfo struct {
 
 func (e *ErrorResponse) Error() string {
 	return fmt.Sprintf("sqs.ErrorResponse Type: %v, Code: %v Message: %v",
-		e.ErrorInfo.Type, e.ErrorInfo.Code, e.ErrorInfo.Message)
-}
-
-func (e *ErrorResponse) SetRawResponse(rawResponse []byte) {
-	e.RawResponse = rawResponse
-}
-
-func (e *ErrorResponse) SetStatus(status string) {
-	e.Status = status
-}
-
-func (e *ErrorResponse) SetStatusCode(statusCode int) {
-	e.StatusCode = statusCode
+		e.Err.Type, e.Err.Code, e.Err.Message)
 }
